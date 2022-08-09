@@ -6,6 +6,4 @@ g3 = G3Client()
 response = g3.battery_level()
 """
 
-from tobii_g3.g3 import G3Client
-
-__all__ = ["G3Client"]
+from tobii_g3.g3 import *

@@ -1,15 +1,23 @@
-import websocket
-
-# import threading
 import json
-from base64 import b64encode, b64decode
-import random
 import subprocess
+import websocket
 import requests
+from functools import wraps
+from base64 import b64encode
 
 from time import sleep
 from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
 from ipaddress import ip_address, IPv4Address
+
+from typing import List, Dict, Any, Optional
+
+__all__ = [
+    "G3Error",
+    "G3NotConnectedError",
+    "G3InvalidIdError",
+    "G3ErrorResponse",
+    "G3Client",
+]
 
 
 class ZeroconfListener(ServiceListener):
@@ -61,6 +69,43 @@ class ZeroconfListener(ServiceListener):
             return False
 
 
+class G3Error(Exception):
+    """Base class for all G3Client exceptions."""
+
+    pass
+
+
+class G3NotConnectedError(G3Error):
+    """Raised when G3Client is not connected to glasses websocket."""
+
+    pass
+
+
+class G3InvalidIdError(G3Error):
+    """Raised when G3Client receives a response with a mismatched id."""
+
+    pass
+
+
+class G3ErrorResponse(G3Error):
+    """Raised when G3Client receives an erorr response from the glasses."""
+
+    pass
+
+
+def requires_connection(func):
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        if not self.connected:
+            raise G3NotConnectedError(
+                "G3Client does not have an active websocket connection."
+            )
+        else:
+            return func(self, *args, **kwargs)
+
+    return wrapper
+
+
 class G3Client:
     __api_objects = [
         "calibrate",
@@ -74,59 +119,52 @@ class G3Client:
         "upgrade",
         "webrtc",
     ]
-    _default_wifi_ip = "192.168.75.51"
-    _default_wifi_url = f"http://{_default_wifi_ip}"
+    default_wifi_ip = "192.168.75.51"
+    default_wifi_url = f"http://{default_wifi_ip}"
 
-    def __init__(self, glasses_address=None):
-        self.glasses_address = glasses_address
-        if glasses_address is None:
-            # try:
-            self._discover_g3()
-            # except:
-            #    print(f"Error during device discovery")
-        if self.glasses_address:
-            try:
-                self.connect()
-            except:
-                print(f"Error in connect")
+    def __init__(self, glasses_address: str):
+        self._glasses_address = glasses_address
+        self._id = 0
 
     def __del__(self):
         self.disconnect()
 
     @property
-    def url(self):
+    def glasses_address(self) -> str:
+        return self._glasses_address or ""
+
+    @glasses_address.setter
+    def glasses_address(self, addr: str):
+        if self.connected:
+            self.disconnect()
+
+        self._glasses_address = addr
+
+    @property
+    def url(self) -> str:
         return f"ws://{self.glasses_address}"
 
     @property
-    def http_url(self):
+    def http_url(self) -> str:
         return f"http://{self.glasses_address}"
 
     @property
-    def ws_url(self):
+    def ws_url(self) -> str:
         return f"{self.url}/websocket/"
 
     @property
-    def connected(self):
-        try:
-            return self.ws.connected
-        except:
-            return False
+    def connected(self) -> bool:
+        return self.ws.connected
 
-    def _discover_g3(self):
-
-        # don't do anything if already connected
-        if self.connected:
-            print(f"Glasses already discovered and connected")
-            return
-
+    @staticmethod
+    def discover_g3() -> Optional[str]:
+        glasses_address = None
         # wifi AP does not seem to work with zeroconf. Just try the default AP IP addr first
         try:
-            res = requests.get(self._default_wifi_url, timeout=0.25)
+            res = requests.get(G3Client.default_wifi_url, timeout=0.25)
             if res.ok:
-                self.glasses_address = self._default_wifi_ip
-                print(f"Discovered glasses at {self.glasses_address}")
-                return
-        except:
+                return G3Client.default_wifi_ip
+        except Exception:
             pass
 
         # discover glasses with zeroconf
@@ -155,63 +193,58 @@ class G3Client:
                 glasses_address = listener.discovered_ips[-1]
             else:
                 glasses_address = None
-                if attempts == max_attempts:
-                    print("Timed out while searching for glasses")
-                else:
-                    RuntimeWarning("Unknown error in _discover_g3")
 
-            if glasses_address:
-                self.glasses_address = glasses_address
-                print(f"Discovered glasses at {glasses_address}")
+        return glasses_address
 
     def connect(self):
-        self.ws = websocket.create_connection(self.ws_url, subprotocols=["g3api"])
         if self.connected:
-            print("connected to websocket")
+            self.ws.close()
+
+        self.ws = websocket.create_connection(self.ws_url, subprotocols=["g3api"])
 
     def disconnect(self):
         if self.connected:
             self.ws.close()
 
-    def _generate_ws_id(self):
-        return random.randint(0, 99)
+    def _generate_ws_id(self) -> int:
+        self._id += 1
+        self._id %= 1024
+        return self._id
 
+    @requires_connection
     def _ws_recv(self):
-        if self.connected:
-            return json.loads(self.ws.recv())
-        else:
-            raise ConnectionError
+        return json.loads(self.ws.recv())
 
-    def _ws_send(self, ws_json):
-        if self.connected:
-            self.ws.send(ws_json)
-        else:
-            raise ConnectionError
+    @requires_connection
+    def _ws_send(self, ws_json: str):
+        self.ws.send(ws_json)
 
-    def _request_property(self, parent_path, property_name):
+    def _request_property(self, parent_path: str, property_name: str) -> Dict[str, Any]:
         id = self._generate_ws_id()
         ws_dict = {"path": f"{parent_path}.{property_name}", "id": id, "method": "GET"}
         ws_json = json.dumps(ws_dict)
         self._ws_send(ws_json)
-        return id
+        return ws_dict
 
-    def get_property(self, parent_path, property_name):
-        id = self._request_property(parent_path, property_name)
+    def get_property(self, parent_path: str, property_name: str):
+        request = self._request_property(parent_path, property_name)
         response = self._ws_recv()
 
-        f_response_match = response["id"] == id
         if "body" in response:
             body = response["body"]
         else:
             body = response
 
-        if f_response_match:
+        if response["id"] == request["id"]:
             return body
         else:
-            print("Warning, received mismatched id in get_property")
-            return None
+            raise G3InvalidIdError(
+                f"Response to get_property contained a mismatched id. {response}"
+            )
 
-    def _request_set_property(self, parent_path, property_name, value):
+    def _request_set_property(
+        self, parent_path: str, property_name: str, value
+    ) -> Dict[str, Any]:
         id = self._generate_ws_id()
         ws_dict = {
             "path": f"{parent_path}.{property_name}",
@@ -221,24 +254,33 @@ class G3Client:
         }
         ws_json = json.dumps(ws_dict)
         self._ws_send(ws_json)
-        return id
+        return ws_dict
 
-    def set_property(self, parent_path, property_name, value):
-        id = self._request_set_property(parent_path, property_name, value)
+    def set_property(
+        self, parent_path: str, property_name: str, value
+    ) -> Dict[str, Any]:
+        request = self._request_set_property(parent_path, property_name, value)
         response = self._ws_recv()
 
-        f_response_match = response["id"] == id
         if "body" in response:
             body = response["body"]
         else:
             body = response
 
-        if not f_response_match:
-            print("Warning, received mismatched id in set_property")
+        if not response["id"] == request["id"]:
+            raise G3InvalidIdError(
+                f"Response to get_property contained a mismatched id. {response}"
+            )
 
-        return (f_response_match, body)
+        return body
 
-    def _request_action(self, parent_path, action_name, action_val=[]):
+    def _request_action(
+        self, parent_path: str, action_name: str, action_val: Optional[List[Any]] = None
+    ) -> Dict[str, Any]:
+
+        if action_val is None:
+            action_val = []
+
         id = self._generate_ws_id()
         ws_dict = {
             "path": f"{parent_path}!{action_name}",
@@ -248,29 +290,38 @@ class G3Client:
         }
         ws_json = json.dumps(ws_dict)
         self._ws_send(ws_json)
-        return id
+        return ws_dict
 
-    def send_action(self, parent_path, action_name, action_val=[]):
-        id = self._request_action(parent_path, action_name, action_val)
+    def send_action(
+        self, parent_path: str, action_name: str, action_val: Optional[List[Any]] = None
+    ):
+        if action_val is None:
+            action_val = []
+        request = self._request_action(parent_path, action_name, action_val)
         response = self._ws_recv()
 
-        f_response_match = response["id"] == id
         if "body" in response:
             body = response["body"]
         else:
             body = response
 
-        if not f_response_match:
-            print("Warning, received mismatched id in send_action")
+        if not response["id"] == request["id"]:
+            raise G3InvalidIdError(
+                f"Response to send_action contained a mismatched id -> {response}"
+            )
 
         if "error_info" in response:
-            print(f"Error in send_action: {response['error_info']}")
+            raise G3ErrorResponse(
+                f"Error in send_action: {response['error_info']}", response
+            )
         if "error" in response:
-            print(f"Error {response['error']}: {response['message']}")
+            raise G3ErrorResponse(
+                f"Error {response['error']}: {response['message']}", response
+            )
 
-        return (f_response_match, body)
+        return body
 
-    def _request_subscribe_signal(self, parent_path, signal_name):
+    def _request_subscribe_signal(self, parent_path, signal_name) -> Dict[str, Any]:
         id = self._generate_ws_id()
         ws_dict = {
             "path": f"{parent_path}:{signal_name}",
@@ -280,95 +331,67 @@ class G3Client:
         }
         ws_json = json.dumps(ws_dict)
         self._ws_send(ws_json)
-        return id
+        return ws_dict
 
     def subscribe_signal(self, parent_path, signal_name):
-        self._request_subscribe_signal(parent_path, signal_name)
+        request = self._request_subscribe_signal(parent_path, signal_name)
         response = self._ws_recv()
 
-        f_response_match = response["id"] == id
         body = response["body"]
-        if not f_response_match:
-            print("Warning, received mismatched id in subscribe_signal")
-        return (f_response_match, body)
-
-    def open_livestream(self):
-        if self.connected:
-            cmd = ["vlc", f"rtsp://{self.glasses_address}:8554/live/all"]
-            subprocess.Popen(
-                cmd,
-                shell=False,
-                stdin=None,
-                stdout=None,
-                stderr=None,
-                close_fds=True,
-                creationflags=subprocess.DETACHED_PROCESS,
+        if not response["id"] == request["id"]:
+            raise G3InvalidIdError(
+                f"Response to subscribe_signal contained a mismatched id -> {response}"
             )
-        else:
-            raise ConnectionError
+        return body
+
+    @requires_connection
+    def open_livestream(self):
+        cmd = ["vlc", f"rtsp://{self.glasses_address}:8554/live/all"]
+        subprocess.Popen(
+            cmd,
+            shell=False,
+            stdin=None,
+            stdout=None,
+            stderr=None,
+            close_fds=True,
+            creationflags=subprocess.DETACHED_PROCESS,
+        )
 
     @property
     def battery_level(self):
-        try:
-            return self.get_property("system/battery", "level")
-        except:
-            return None
+        return self.get_property("system/battery", "level")
 
     @property
     def remaining_battery_time(self):
-        try:
-            return self.get_property("system/battery", "remaining-time")
-        except:
-            return None
+        return self.get_property("system/battery", "remaining-time")
 
     @property
     def battery_state(self):
-        try:
-            return self.get_property("system/battery", "state")
-        except:
-            return None
+        return self.get_property("system/battery", "state")
 
     @property
     def system_time(self):
-        try:
-            return self.get_property("system", "time")
-        except:
-            return None
+        return self.get_property("system", "time")
 
     @property
     def system_timezone(self):
-        try:
-            return self.get_property("system", "timezone")
-        except:
-            return None
+        return self.get_property("system", "timezone")
 
     @property
     def head_unit_serial(self):
-        try:
-            return self.get_property("system", "head-unit-serial")
-        except:
-            return None
+        return self.get_property("system", "head-unit-serial")
 
     @property
     def recording_unit_serial(self):
-        try:
-            return self.get_property("system", "recording-unit-serial")
-        except:
-            return None
+        return self.get_property("system", "recording-unit-serial")
 
     @property
     def firmware_version(self):
-        try:
-            return self.get_property("system", "version")
-        except:
-            return None
+        return self.get_property("system", "version")
 
     @property
     def sd_card_state(self):
-        try:
-            return self.get_property("system/storage", "card-state")
-        except:
-            return None
+        return self.get_property("system/storage", "card-state")
 
     def emit_calibrate_markers(self):
         return self.send_action("calibrate", "emit-markers")
@@ -407,54 +430,33 @@ class G3Client:
 
     def get_recording_url(self, uuid):
         recording_url = self.get_property(f"recordings/{uuid}", "http-path")
-        if recording_url[0]:
-            recording_url = recording_url[1]
-        else:
-            return None
-        full_url = f"{self.http_url}{recording_url}"
-        return full_url
+        return f"{self.http_url}{recording_url}"
 
     def get_recording_g3(self, uuid):
         g3_url = self.get_recording_url(uuid)
-        if g3_url is None:
-            return None
-
-        try:
-            response = requests.get(g3_url, timeout=0.5)
-            if response.ok:
-                return response.json()
-            else:
-                print(f"HTTP error: {response.reason}")
-                return None
-        except requests.exceptions.RequestException as e:
-            print(f"HTTP exception: {e}")
-            return None
+        response = requests.get(g3_url, timeout=0.5)
+        if response.ok:
+            return response.json()
+        else:
+            raise G3ErrorResponse(f"HTTP error: {response.reason}", response)
 
     def get_recording_gaze(self, uuid):
         base_url = self.get_recording_url(uuid)
-        if base_url is None:
-            return None
-
         g3 = self.get_recording_g3(uuid)
         gaze_file = g3["gaze"]["file"]
         gaze_url = f"{base_url}/{gaze_file}"
-        try:
-            res = requests.get(
-                gaze_url, params={"use-content-encoding": "true"}, timeout=0.5
-            )
-            gaze_list = []
-            if res.ok:
-                for line in res.text.splitlines():
-                    if line:
-                        obj = json.loads(line)
-                        gaze_list.append(obj)
-                return gaze_list
-            else:
-                print(f"HTTP error: {res.reason}")
-                return None
-        except requests.exceptions.RequestException as e:
-            print(f"HTTP exception: {e}")
-            return None
+        response = requests.get(
+            gaze_url, params={"use-content-encoding": "true"}, timeout=0.5
+        )
+        gaze_list = []
+        if response.ok:
+            for line in response.text.splitlines():
+                if line:
+                    obj = json.loads(line)
+                    gaze_list.append(obj)
+            return gaze_list
+        else:
+            raise G3ErrorResponse(f"HTTP error: {response.reason}", response)
 
     def get_recording_events(self, uuid):
         base_url = self.get_recording_url(uuid)
@@ -464,46 +466,33 @@ class G3Client:
         g3 = self.get_recording_g3(uuid)
         event_file = g3["events"]["file"]
         event_url = f"{base_url}/{event_file}"
-        try:
-            res = requests.get(
-                event_url, params={"use-content-encoding": "true"}, timeout=0.5
-            )
-            event_list = []
-            if res.ok:
-                for line in res.text.splitlines():
-                    if line:
-                        obj = json.loads(line)
-                        event_list.append(obj)
-                return event_list
-            else:
-                print(f"HTTP error: {res.reason}")
-                return None
-        except requests.exceptions.RequestException as e:
-            print(f"HTTP exception: {e}")
-            return None
+        response = requests.get(
+            event_url, params={"use-content-encoding": "true"}, timeout=0.5
+        )
+        event_list = []
+        if response.ok:
+            for line in response.text.splitlines():
+                if line:
+                    obj = json.loads(line)
+                    event_list.append(obj)
+            return event_list
+        else:
+            raise G3ErrorResponse(f"HTTP error: {response.reason}", response)
 
     def get_recording_imu(self, uuid):
         base_url = self.get_recording_url(uuid)
-        if base_url is None:
-            return None
-
         g3 = self.get_recording_g3(uuid)
         imu_file = g3["imu"]["file"]
         imu_url = f"{base_url}/{imu_file}"
-        try:
-            res = requests.get(
-                imu_url, params={"use-content-encoding": "true"}, timeout=0.5
-            )
-            imu_list = []
-            if res.ok:
-                for line in res.text.splitlines():
-                    if line:
-                        obj = json.loads(line)
-                        imu_list.append(obj)
-                return imu_list
-            else:
-                print(f"HTTP error: {res.reason}")
-                return None
-        except requests.exceptions.RequestException as e:
-            print(f"HTTP exception: {e}")
-            return None
+        response = requests.get(
+            imu_url, params={"use-content-encoding": "true"}, timeout=0.5
+        )
+        imu_list = []
+        if response.ok:
+            for line in response.text.splitlines():
+                if line:
+                    obj = json.loads(line)
+                    imu_list.append(obj)
+            return imu_list
+        else:
+            raise G3ErrorResponse(f"HTTP error: {response.reason}", response)
