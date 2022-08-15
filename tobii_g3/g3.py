@@ -13,7 +13,9 @@ from typing import List, Dict, Any, Optional
 
 __all__ = [
     "G3Error",
+    "G3TimeoutError",
     "G3NotConnectedError",
+    "G3ConnectionError",
     "G3InvalidIdError",
     "G3ErrorResponse",
     "G3Client",
@@ -75,8 +77,20 @@ class G3Error(Exception):
     pass
 
 
+class G3TimeoutError(G3Error):
+    """Raised when G3Client can not establish a connection."""
+
+    pass
+
+
 class G3NotConnectedError(G3Error):
     """Raised when G3Client is not connected to glasses websocket."""
+
+    pass
+
+
+class G3ConnectionError(G3Error):
+    """Raised when G3Client websocket encounters a closed connection or network error."""
 
     pass
 
@@ -125,6 +139,7 @@ class G3Client:
     def __init__(self, glasses_address: str):
         self._glasses_address = glasses_address
         self._id = 0
+        self.ws = websocket.WebSocket()
 
     def __del__(self):
         self.disconnect()
@@ -200,7 +215,12 @@ class G3Client:
         if self.connected:
             self.ws.close()
 
-        self.ws = websocket.create_connection(self.ws_url, subprotocols=["g3api"])
+        try:
+            self.ws.connect(self.ws_url, subprotocols=["g3api"], timeout=5)
+        except websocket.WebSocketTimeoutException as e:
+            raise G3TimeoutError(
+                "Timed out trying to connect to glasses server."
+            ) from e
 
     def disconnect(self):
         if self.connected:
@@ -213,11 +233,18 @@ class G3Client:
 
     @requires_connection
     def _ws_recv(self):
-        return json.loads(self.ws.recv())
+        try:
+            data = self.ws.recv()
+        except websocket.WebSocketConnectionClosedException as e:
+            raise G3ConnectionError from e
+        return json.loads(data)
 
     @requires_connection
     def _ws_send(self, ws_json: str):
-        self.ws.send(ws_json)
+        try:
+            self.ws.send(ws_json)
+        except websocket.WebSocketConnectionClosedException as e:
+            raise G3ConnectionError from e
 
     def _request_property(self, parent_path: str, property_name: str) -> Dict[str, Any]:
         id = self._generate_ws_id()
