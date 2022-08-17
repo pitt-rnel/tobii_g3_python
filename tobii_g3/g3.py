@@ -433,7 +433,8 @@ class G3Client:
         return self.send_action("recorder", "stop")
 
     def set_folder_name(self, folder_name):
-        # does this even work??
+        if "_" in folder_name:
+            raise RuntimeError("Folder name can not include a '_'.")
         return self.set_property("recorder", "folder", folder_name)
 
     def set_visible_name(self, visible_name):
