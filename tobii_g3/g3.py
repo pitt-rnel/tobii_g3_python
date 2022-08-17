@@ -216,7 +216,7 @@ class G3Client:
             self.ws.close()
 
         try:
-            self.ws.connect(self.ws_url, subprotocols=["g3api"], timeout=5)
+            self.ws.connect(self.ws_url, subprotocols=["g3api"])
         except websocket.WebSocketTimeoutException as e:
             raise G3TimeoutError(
                 "Timed out trying to connect to glasses server."
