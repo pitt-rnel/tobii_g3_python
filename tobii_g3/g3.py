@@ -433,8 +433,16 @@ class G3Client:
         return self.send_action("recorder", "stop")
 
     def set_folder_name(self, folder_name):
-        if "_" in folder_name:
-            raise RuntimeError("Folder name can not include a '_'.")
+        """The recorder.folder property will be used to create a folder on a FAT32/exFAT
+        file system and is restricted in length and in which characters are allowed.
+        The following characters cannot be used: 0x00-0x1F 0x7F " * / : < > ? \ |.
+        _ is also known not to work"""
+        illegal_chars = ['"', '*', '/', ':', '<', '>', '?', '\\', '|', '_'] # bad printable characters
+        for x in range(0x20): # bad control characters 0x00 - 0x1f
+            illegal_chars.append(chr(x))
+        for c in illegal_chars:    
+            if c in folder_name:
+                raise RuntimeError(f"Folder name can not include a '{c}'.")
         return self.set_property("recorder", "folder", folder_name)
 
     def set_visible_name(self, visible_name):
