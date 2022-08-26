@@ -348,6 +348,28 @@ class G3Client:
 
         return body
 
+    def create_wifi_config(self, name: str):
+        uuid = self.send_action("network/wifi", "create-config", [name])
+        return uuid
+
+    def config_wifi(self, uuid, ssid: str, psk: str):
+        self.set_property(f"network/wifi/configurations/{uuid}", "ssid-name", ssid)
+        self.set_property(f"network/wifi/configurations/{uuid}", "security", "wpa-psk")
+        self.set_property(f"network/wifi/configurations/{uuid}", "psk", psk)
+        self.send_action(f"network/wifi/configurations/{uuid}", "save")
+
+    def connect_wifi(self, uuid):
+        self.send_action(f"network/wifi", "connect", [uuid])
+
+    def disconnect_wifi(self):
+        self.send_action(f"network/wifi", "disconnect")
+
+    def scan_wifi(self, uuid):
+        self.send_action(f"network/wifi", "scan")
+
+    def network_factory_reset(self):
+        self.send_action(f"network", "reset")
+
     def _request_subscribe_signal(self, parent_path, signal_name) -> Dict[str, Any]:
         id = self._generate_ws_id()
         ws_dict = {
@@ -437,10 +459,21 @@ class G3Client:
         file system and is restricted in length and in which characters are allowed.
         The following characters cannot be used: 0x00-0x1F 0x7F " * / : < > ? \ |.
         _ is also known not to work"""
-        illegal_chars = ['"', '*', '/', ':', '<', '>', '?', '\\', '|', '_'] # bad printable characters
-        for x in range(0x20): # bad control characters 0x00 - 0x1f
+        illegal_chars = [
+            '"',
+            "*",
+            "/",
+            ":",
+            "<",
+            ">",
+            "?",
+            "\\",
+            "|",
+            "_",
+        ]  # bad printable characters
+        for x in range(0x20):  # bad control characters 0x00 - 0x1f
             illegal_chars.append(chr(x))
-        for c in illegal_chars:    
+        for c in illegal_chars:
             if c in folder_name:
                 raise RuntimeError(f"Folder name can not include a '{c}'.")
         return self.set_property("recorder", "folder", folder_name)
