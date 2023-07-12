@@ -299,6 +299,11 @@ class G3Client:
                 f"Response to get_property contained a mismatched id. {response}"
             )
 
+        if body is False:
+            raise G3ErrorResponse(
+                f"Failed set-property: {parent_path}.{property_name}: {value}"
+            )
+
         return body
 
     def _request_action(
@@ -344,6 +349,11 @@ class G3Client:
         if "error" in response:
             raise G3ErrorResponse(
                 f"Error {response['error']}: {response['message']}", response
+            )
+
+        if body is False:
+            raise G3ErrorResponse(
+                f"Failed send-action: {parent_path}!{action_name}: {action_val}"
             )
 
         return body
@@ -441,6 +451,22 @@ class G3Client:
     @property
     def sd_card_state(self):
         return self.get_property("system/storage", "card-state")
+
+    @property
+    def recording_uuid(self):
+        return self.get_property("recorder", "uuid")
+
+    @property
+    def recording_folder(self):
+        return self.get_property("recorder", "folder")
+
+    @property
+    def duration(self):
+        return self.get_property("recorder", "duration")
+
+    @property
+    def is_recording(self):
+        return self.get_property("recorder", "duration") != -1
 
     def emit_calibrate_markers(self):
         return self.send_action("calibrate", "emit-markers")
