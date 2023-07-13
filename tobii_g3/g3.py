@@ -344,11 +344,11 @@ class G3Client:
 
         if "error_info" in response:
             raise G3ErrorResponse(
-                f"Error in send_action: {response['error_info']}", response
+                f"Failed send-action: {response['error_info']}", response
             )
         if "error" in response:
             raise G3ErrorResponse(
-                f"Error {response['error']}: {response['message']}", response
+                f"Failed send-action: {response['error']}: {response['message']}", response
             )
 
         if body is False:
