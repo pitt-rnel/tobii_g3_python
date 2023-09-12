@@ -9,7 +9,7 @@ from time import sleep
 from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
 from ipaddress import ip_address, IPv4Address
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union, cast, Tuple
 
 __all__ = [
     "G3Error",
@@ -23,44 +23,48 @@ __all__ = [
 
 
 class ZeroconfListener(ServiceListener):
+    """Class to discover Glasses 3 units using zeroconf"""
+
     _discovered_ips = []
     _discovered_ipv6s = []
     _discovered_servers = []
 
     @property
-    def discovered_ips(self):
+    def discovered_ips(self) -> Tuple[str, ...]:
         return tuple(self._discovered_ips)
 
     @property
-    def discovered_ipv6s(self):
+    def discovered_ipv6s(self) -> Tuple[str, ...]:
         return tuple(self._discovered_ipv6s)
 
     @property
-    def discovered_servers(self):
+    def discovered_servers(self) -> Tuple[str, ...]:
         return tuple(self._discovered_servers)
 
-    def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+    def add_service(self, zc: Zeroconf, type_: str, name: str):
         info = zc.get_service_info(type_, name)
-        server = info.server
-        if server[-1] == ".":
-            server = server[:-1]
-        self._discovered_servers.append(server)
+        if info:
+            server = info.server
+            if server[-1] == ".":
+                server = server[:-1]
+            self._discovered_servers.append(server)
 
-        ip_list = info.parsed_scoped_addresses()
-        for ip in ip_list:
-            if ip not in self.discovered_ips and self.is_ipv4(ip):
-                self._discovered_ips.append(ip)
-            elif ip not in self.discovered_ipv6s and not self.is_ipv4(ip):
-                self._discovered_ipv6s.append(ip)
+            ip_list = info.parsed_scoped_addresses()
+            for ip in ip_list:
+                if ip not in self.discovered_ips and self.is_ipv4(ip):
+                    self._discovered_ips.append(ip)
+                elif ip not in self.discovered_ipv6s and not self.is_ipv4(ip):
+                    self._discovered_ipv6s.append(ip)
 
-    def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+    def remove_service(self, zc: Zeroconf, type_: str, name: str):
         info = zc.get_service_info(type_, name)
-        ip_list = info.parsed_addresses()
-        for ip in ip_list:
-            if ip in self.discovered_ips:
-                self._discovered_ips.remove(ip)
+        if info:
+            ip_list = info.parsed_addresses()
+            for ip in ip_list:
+                if ip in self.discovered_ips:
+                    self._discovered_ips.remove(ip)
 
-    def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+    def update_service(self, zc: Zeroconf, type_: str, name: str):
         pass
 
     @staticmethod
@@ -121,7 +125,9 @@ def requires_connection(func):
 
 
 class G3Client:
-    __api_objects = [
+    """Class to interact with Tobii Glasses 3 system"""
+
+    _api_objects = [
         "calibrate",
         "neighborhood",
         "network",
@@ -137,6 +143,11 @@ class G3Client:
     default_wifi_url = f"http://{default_wifi_ip}"
 
     def __init__(self, glasses_address: str):
+        """G3Client Constructor
+
+        Args:
+            glasses_address (str): IP address or hostname of glasses 3 recording unit
+        """
         self._glasses_address = glasses_address
         self._id = 0
         self.ws = websocket.WebSocket()
@@ -173,6 +184,11 @@ class G3Client:
 
     @staticmethod
     def discover_g3() -> Optional[str]:
+        """Method to discover Glasses 3 units using zeroconf
+
+        Returns:
+            Optional[str]: Discovered Glasses 3 address, None if glasses are not found
+        """
         glasses_address = None
         # wifi AP does not seem to work with zeroconf. Just try the default AP IP addr first
         try:
@@ -189,6 +205,7 @@ class G3Client:
         attempts = 0
         service_type = "_tobii-g3api._tcp.local."
         listener = ZeroconfListener()
+        zeroconf = None
         try:
             zeroconf = Zeroconf()
             browser = ServiceBrowser(zeroconf, service_type, listener)
@@ -199,7 +216,8 @@ class G3Client:
                 attempts += 1
                 sleep(sleep_interval)
         finally:
-            zeroconf.close()
+            if zeroconf:
+                zeroconf.close()
             if listener.discovered_servers:
                 glasses_address = listener.discovered_servers[
                     -1
@@ -212,6 +230,11 @@ class G3Client:
         return glasses_address
 
     def connect(self):
+        """Connect to Glasses 3 system
+
+        Raises:
+            G3TimeoutError: Timed out trying to connect to glasses server
+        """
         if self.connected:
             self.ws.close()
 
@@ -223,6 +246,7 @@ class G3Client:
             ) from e
 
     def disconnect(self):
+        """Disconnect from Glasses 3 system"""
         if self.connected:
             self.ws.close()
 
@@ -232,7 +256,7 @@ class G3Client:
         return self._id
 
     @requires_connection
-    def _ws_recv(self):
+    def _ws_recv(self) -> Any:
         try:
             data = self.ws.recv()
         except websocket.WebSocketConnectionClosedException as e:
@@ -253,7 +277,19 @@ class G3Client:
         self._ws_send(ws_json)
         return ws_dict
 
-    def get_property(self, parent_path: str, property_name: str):
+    def get_property(self, parent_path: str, property_name: str) -> Any:
+        """Get property value from Glasses 3 API
+
+        Args:
+            parent_path (str): API object path
+            property_name (str): API object property name
+
+        Raises:
+            G3InvalidIdError: API response contained a mismatched id
+
+        Returns:
+            Any: Value of property
+        """
         request = self._request_property(parent_path, property_name)
         response = self._ws_recv()
 
@@ -283,9 +319,21 @@ class G3Client:
         self._ws_send(ws_json)
         return ws_dict
 
-    def set_property(
-        self, parent_path: str, property_name: str, value
-    ) -> Dict[str, Any]:
+    def set_property(self, parent_path: str, property_name: str, value) -> Any:
+        """Set API property value
+
+        Args:
+            parent_path (str): API object path
+            property_name (str): API object property name
+            value (_type_): Value to set
+
+        Raises:
+            G3InvalidIdError: API response contained a mismatched id
+            G3ErrorResponse: Failed to set property
+
+        Returns:
+            Any: Response from the API. Typically a boolean indicating if the property was successfully set.
+        """
         request = self._request_set_property(parent_path, property_name, value)
         response = self._ws_recv()
 
@@ -309,7 +357,6 @@ class G3Client:
     def _request_action(
         self, parent_path: str, action_name: str, action_val: Optional[List[Any]] = None
     ) -> Dict[str, Any]:
-
         if action_val is None:
             action_val = []
 
@@ -326,9 +373,21 @@ class G3Client:
 
     def send_action(
         self, parent_path: str, action_name: str, action_val: Optional[List[Any]] = None
-    ):
-        if action_val is None:
-            action_val = []
+    ) -> Any:
+        """Send an API action
+
+        Args:
+            parent_path (str): API object path
+            action_name (str): API action name
+            action_val (Optional[List[Any]], optional): Value of action, if required. Defaults to None.
+
+        Raises:
+            G3InvalidIdError: API response contained a mismatched id
+            G3ErrorResponse: Failed to send action
+
+        Returns:
+            Any: Response to action from API
+        """
         request = self._request_action(parent_path, action_name, action_val)
         response = self._ws_recv()
 
@@ -348,7 +407,8 @@ class G3Client:
             )
         if "error" in response:
             raise G3ErrorResponse(
-                f"Failed send-action: {response['error']}: {response['message']}", response
+                f"Failed send-action: {response['error']}: {response['message']}",
+                response,
             )
 
         if body is False:
@@ -358,26 +418,53 @@ class G3Client:
 
         return body
 
-    def create_wifi_config(self, name: str):
+    def create_wifi_config(self, name: str) -> str:
+        """Create a wifi config entry
+
+        Args:
+            name (str): Name of wifi config to create
+
+        Returns:
+            str: UUID of wifi config
+        """
         uuid = self.send_action("network/wifi", "create-config", [name])
         return uuid
 
-    def config_wifi(self, uuid, ssid: str, psk: str):
+    def config_wifi(self, uuid: str, ssid: str, psk: str):
+        """Configure Glasses 3 wifi settings
+
+        Args:
+            uuid (str): Wifi config entry uuid
+            ssid (str): Wifi ssid
+            psk (str): Wifi passkey
+        """
         self.set_property(f"network/wifi/configurations/{uuid}", "ssid-name", ssid)
         self.set_property(f"network/wifi/configurations/{uuid}", "security", "wpa-psk")
         self.set_property(f"network/wifi/configurations/{uuid}", "psk", psk)
         self.send_action(f"network/wifi/configurations/{uuid}", "save")
 
-    def connect_wifi(self, uuid):
+    def connect_wifi(self, uuid: str):
+        """Connect glasses to wifi
+
+        Args:
+            uuid (str): uuid of wifi configuration
+        """
         self.send_action(f"network/wifi", "connect", [uuid])
 
     def disconnect_wifi(self):
+        """Disconnect glasses from wifi"""
         self.send_action(f"network/wifi", "disconnect")
 
-    def scan_wifi(self, uuid):
+    def scan_wifi(self, uuid: str):
+        """Scan for wifi network
+
+        Args:
+            uuid (str): uuid of wifi configuration
+        """
         self.send_action(f"network/wifi", "scan")
 
     def network_factory_reset(self):
+        """Reset network settings to factory settings"""
         self.send_action(f"network", "reset")
 
     def _request_subscribe_signal(self, parent_path, signal_name) -> Dict[str, Any]:
@@ -392,7 +479,19 @@ class G3Client:
         self._ws_send(ws_json)
         return ws_dict
 
-    def subscribe_signal(self, parent_path, signal_name):
+    def subscribe_signal(self, parent_path: str, signal_name: str) -> Any:
+        """Subscribe to API signal
+
+        Args:
+            parent_path (str): API object path
+            signal_name (str): API signal name
+
+        Raises:
+            G3InvalidIdError: API response contained a mismatched id
+
+        Returns:
+            Any: API response
+        """
         request = self._request_subscribe_signal(parent_path, signal_name)
         response = self._ws_recv()
 
@@ -405,6 +504,10 @@ class G3Client:
 
     @requires_connection
     def open_livestream(self):
+        """Launch rtsp livestream in VLC
+
+        Note that VLC must be available on system path
+        """
         cmd = ["vlc", f"rtsp://{self.glasses_address}:8554/live/all"]
         subprocess.Popen(
             cmd,
@@ -417,71 +520,103 @@ class G3Client:
         )
 
     @property
-    def battery_level(self):
+    def battery_level(self) -> float:
         return self.get_property("system/battery", "level")
 
     @property
-    def remaining_battery_time(self):
+    def remaining_battery_time(self) -> int:
         return self.get_property("system/battery", "remaining-time")
 
     @property
-    def battery_state(self):
+    def battery_state(self) -> str:
         return self.get_property("system/battery", "state")
 
     @property
-    def system_time(self):
+    def system_time(self) -> str:
         return self.get_property("system", "time")
 
     @property
-    def system_timezone(self):
+    def system_timezone(self) -> str:
         return self.get_property("system", "timezone")
 
     @property
-    def head_unit_serial(self):
+    def head_unit_serial(self) -> str:
         return self.get_property("system", "head-unit-serial")
 
     @property
-    def recording_unit_serial(self):
+    def recording_unit_serial(self) -> str:
         return self.get_property("system", "recording-unit-serial")
 
     @property
-    def firmware_version(self):
+    def firmware_version(self) -> str:
         return self.get_property("system", "version")
 
     @property
-    def sd_card_state(self):
+    def sd_card_state(self) -> str:
         return self.get_property("system/storage", "card-state")
 
     @property
-    def recording_uuid(self):
+    def recording_uuid(self) -> str:
         return self.get_property("recorder", "uuid")
 
     @property
-    def recording_folder(self):
+    def recording_folder(self) -> str:
         return self.get_property("recorder", "folder")
 
     @property
-    def duration(self):
+    def duration(self) -> float:
         return self.get_property("recorder", "duration")
 
     @property
-    def is_recording(self):
+    def is_recording(self) -> bool:
         return self.get_property("recorder", "duration") != -1
 
-    def emit_calibrate_markers(self):
+    def emit_calibrate_markers(self) -> bool:
+        """Emit markers for calibration
+
+        Returns:
+            bool: if successful
+        """
         return self.send_action("calibrate", "emit-markers")
 
-    def calibrate(self):
+    def calibrate(self) -> bool:
+        """Send calibrate action
+
+        Returns:
+            bool: if successful
+        """
         return self.send_action("calibrate", "run")
 
-    def start_recording(self):
+    def start_recording(self) -> bool:
+        """Start recording
+
+        Returns:
+            bool: if recording was successfully started
+        """
         return self.send_action("recorder", "start")
 
-    def stop_recording(self):
+    def stop_recording(self) -> bool:
+        """Stop recording
+
+        Returns:
+            bool: if recording was successfully stopped
+        """
         return self.send_action("recorder", "stop")
 
-    def set_folder_name(self, folder_name):
-        """The recorder.folder property will be used to create a folder on a FAT32/exFAT
+    def set_folder_name(self, folder_name: str) -> bool:
+        """Set recorder folder name
+
+        Args:
+            folder_name (str): name of folder
+
+        Raises:
+            RuntimeError: Invalid character in folder name
+
+        Returns:
+            bool: if successful
+        """ """"""
+
+        r"""The recorder.folder property will be used to create a folder on a FAT32/exFAT
         file system and is restricted in length and in which characters are allowed.
         The following characters cannot be used: 0x00-0x1F 0x7F " * / : < > ? \ |.
         _ is also known not to work"""
@@ -499,35 +634,90 @@ class G3Client:
         ]  # bad printable characters
         for x in range(0x20):  # bad control characters 0x00 - 0x1f
             illegal_chars.append(chr(x))
+        illegal_chars.append(chr(0x7F))  # bad control character 0x7f
         for c in illegal_chars:
             if c in folder_name:
-                raise RuntimeError(f"Folder name can not include a '{c}'.")
+                raise ValueError(f"Folder name can not include a '{c}'.")
         return self.set_property("recorder", "folder", folder_name)
 
-    def set_visible_name(self, visible_name):
+    def set_visible_name(self, visible_name: str) -> bool:
+        """Set recording visible name
+
+        Args:
+            visible_name (str): human-readable recording name
+
+        Returns:
+            bool: if successful
+        """
         # this name is saved as a key in recording.g3 file and is seen in the web interface or glasses app
         return self.set_property("recorder", "visible-name", visible_name)
 
-    def meta_insert(self, key_name, byte_data):
+    def meta_insert(self, key_name: str, byte_data: Union[bytes, str]) -> bool:
+        """Insert metadata into recording
+
+        Args:
+            key_name (str): metadata keyname
+            byte_data (Union[bytes, str]): metadata to insert, as bytes
+
+        Returns:
+            bool: if successful
+        """
         if type(byte_data) is str:
             byte_data = bytes(byte_data.encode("utf-8"))
+        byte_data = cast(bytes, byte_data)
 
         b64data = b64encode(byte_data)
         # meta_data = f'["{key_name}", "{b64data.decode("ascii")}"]'
         meta_data = [key_name, b64data.decode("ascii")]
         return self.send_action("recorder", "meta_insert", meta_data)
 
-    def send_event(self, tag, data):
+    def send_event(self, tag: str, data: list) -> bool:
+        """Send custom event to recording
+
+        Args:
+            tag (str): event tag
+            data (list): event data, to be encoded in json
+
+        Returns:
+            bool: if successful
+        """
         return self.send_action("recorder", "send-event", [tag, data])
 
-    def set_gaze_overlay(self, b_overlay=True):
+    def set_gaze_overlay(self, b_overlay: bool = True) -> bool:
+        """Enable or disable gaze overlay
+
+        Args:
+            b_overlay (bool, optional): Gaze overlay value. Defaults to True.
+
+        Returns:
+            bool: If successful
+        """
         return self.set_property("settings", "gaze_overlay", b_overlay)
 
-    def get_recording_url(self, uuid):
+    def get_recording_url(self, uuid: str) -> str:
+        """Get URL of recording from uuid
+
+        Args:
+            uuid (str): uuid of recording
+
+        Returns:
+            str: recording URL
+        """
         recording_url = self.get_property(f"recordings/{uuid}", "http-path")
         return f"{self.http_url}{recording_url}"
 
-    def get_recording_g3(self, uuid):
+    def get_recording_g3(self, uuid: str) -> dict:
+        """Get recording data dict
+
+        Args:
+            uuid (str): uuid of recording
+
+        Raises:
+            G3ErrorResponse: HTTP error
+
+        Returns:
+            dict: recording data
+        """
         g3_url = self.get_recording_url(uuid)
         response = requests.get(g3_url, timeout=0.5)
         if response.ok:
@@ -535,7 +725,18 @@ class G3Client:
         else:
             raise G3ErrorResponse(f"HTTP error: {response.reason}", response)
 
-    def get_recording_gaze(self, uuid):
+    def get_recording_gaze(self, uuid: str) -> list:
+        """Get gaze data from recording
+
+        Args:
+            uuid (str): uuid of recording
+
+        Raises:
+            G3ErrorResponse: HTTP error
+
+        Returns:
+            list: gaze data
+        """
         base_url = self.get_recording_url(uuid)
         g3 = self.get_recording_g3(uuid)
         gaze_file = g3["gaze"]["file"]
@@ -553,7 +754,18 @@ class G3Client:
         else:
             raise G3ErrorResponse(f"HTTP error: {response.reason}", response)
 
-    def get_recording_events(self, uuid):
+    def get_recording_events(self, uuid: str) -> Optional[list]:
+        """Get list of events from recording
+
+        Args:
+            uuid (str): recording uuid
+
+        Raises:
+            G3ErrorResponse: HTTP error
+
+        Returns:
+            Optional[list]: list of events in recording
+        """
         base_url = self.get_recording_url(uuid)
         if base_url is None:
             return None
@@ -574,7 +786,18 @@ class G3Client:
         else:
             raise G3ErrorResponse(f"HTTP error: {response.reason}", response)
 
-    def get_recording_imu(self, uuid):
+    def get_recording_imu(self, uuid: str) -> list:
+        """Get IMU data from recording
+
+        Args:
+            uuid (str): uuid of recording
+
+        Raises:
+            G3ErrorResponse: HTTP error
+
+        Returns:
+            list: list of IMU data
+        """
         base_url = self.get_recording_url(uuid)
         g3 = self.get_recording_g3(uuid)
         imu_file = g3["imu"]["file"]
