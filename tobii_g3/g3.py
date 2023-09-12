@@ -671,12 +671,12 @@ class G3Client:
         meta_data = [key_name, b64data.decode("ascii")]
         return self.send_action("recorder", "meta_insert", meta_data)
 
-    def send_event(self, tag: str, data: list) -> bool:
+    def send_event(self, tag: str, data: Any) -> bool:
         """Send custom event to recording
 
         Args:
             tag (str): event tag
-            data (list): event data, to be encoded in json
+            data (Any): event data, to be encoded in json
 
         Returns:
             bool: if successful
